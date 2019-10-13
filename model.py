@@ -212,6 +212,11 @@ class Transducer(nn.Module):
         xs, xn = self.encoder.features(xs, xn)
         xs = xs.transpose(0, 1)
         # decoder
+        zs = self.forward_decoder(xs, ys, yn)
+        return zs, xs, xn
+
+    def forward_decoder(self, xs, ys, yn):
+        # decoder
         ys = self.decoder.features(ys, yn)
         ys = ys.transpose(0, 1)
         # align
@@ -221,24 +226,29 @@ class Transducer(nn.Module):
         y = ys.unsqueeze(dim=1).expand(torch.Size([n, t, u, y_h]))
         # predict
         zs = self.joint(x, y)
-        return zs, xs, xn
+        return zs
 
-    def greedy_decode(self, xs):
+    def greedy_decode(self, xs, sampled=False):
 
         n, t, h = xs.size()
 
         c = torch.zeros((1, n), device=xs.device).long()
         yd, (hd, cd) = self.decoder.step_features(c)
 
-        s = torch.zeros((n, t), dtype=torch.int)
+        s = torch.zeros((n, t), device=xs.device, dtype=torch.int)
 
         for i in range(t):
 
             z = self.joint(xs[:, i], yd[0])
 
-            c = torch.argmax(z, dim=-1).view(1, n)
+            if sampled:
+                c = torch.multinomial(z.exp(), num_samples=1).view(n)
+            else:
+                c = torch.argmax(z, dim=-1)
 
-            s[:, i] = c.cpu().view(n)
+            s[:, i] = c
+
+            c = c.view(1, n)
 
             mask = c == self.blank
             mask = mask.unsqueeze(-1)

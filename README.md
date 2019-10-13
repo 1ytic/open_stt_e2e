@@ -1,10 +1,18 @@
 # PyTorch E2E ASR for open_stt dataset
 
-This repository contains a minimal set of scripts for training language and acoustic models for the speech recognition task.
+Minimal set of scripts for training language and acoustic models for the speech recognition task.
+
+[Russian Open Speech To Text (STT/ASR) Dataset](https://github.com/snakers4/open_stt) was taken as a data source.
+
+## Results
 
 Models can be trained locally, but to demonstrate the performance of scripts the [kaggle](https://www.kaggle.com) platform was choosen.
 
-[Russian Open Speech To Text (STT/ASR) Dataset](https://github.com/snakers4/open_stt) was taken as a data source.
+| Stage | Loss  | Updates | CER   | WER   |
+|:-----:|:------|--------:|:-----:|:-----:|
+| 1     | CTC   | 150000  | 41.10 | 84.68 |
+| 2     | RNN-T | 80000   | 50.98 | 74.51 |
+| 3     | RL    | 2000    | 43.91 | 71.36 |
 
 
 ## Preprocessing
@@ -35,6 +43,8 @@ Language model is character-based and not case sensitive.
 - [open-stt-ctc](https://www.kaggle.com/sorokin/open-stt-ctc) - CNN-RNN acoustic model with CTC loss
 
 - [open-stt-rnnt](https://www.kaggle.com/sorokin/open-stt-rnnt) - Character-based RNN language model and CNN-RNN acoustic model with RNN-T loss
+
+- [open-stt-rl](https://www.kaggle.com/sorokin/open-stt-rl) - Fine-tuning with Reinforcement Learning and RNN-T loss
 
 
 ## Utility scripts
