@@ -34,7 +34,8 @@ train.filter_by_length(400)
 test.filter_by_conv(model.encoder.conv)
 test.filter_by_length(200)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=3e-5, weight_decay=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=3e-6, weight_decay=1e-5)
+scheduler = StepLR(optimizer, step_size=300, gamma=0.99)
 
 model.cuda()
 
@@ -44,9 +45,9 @@ train = DataLoader(train, pin_memory=True, num_workers=4, collate_fn=collate_fn_
 test = DataLoader(test, pin_memory=True, num_workers=4, collate_fn=collate_fn_rnnt, batch_size=16)
 
 N = 10
-alpha = 0.001
+alpha = 0.01
 
-for epoch in range(10):
+for epoch in range(5):
 
     sampler.shuffle(epoch)
 
@@ -92,7 +93,16 @@ for epoch in range(10):
                     codes = labels(h)
                     temp1.append(torch.tensor(codes, dtype=torch.int))
                     temp2.append(len(codes))
-                    rewards[n, i] = decoder.wer(h, r)
+                    
+                    # Reward shaping
+                    # http://www.apsipa.org/proceedings/2018/pdfs/0001934.pdf
+                    
+                    N_ref = len(r)
+                    N_hyp = max(len(codes), 1)
+                    Err = wer(h, r)
+                    SymAcc = 1 - Err / 2 * (1 + N_ref / N_hyp)
+                    
+                    rewards[n, i] = max(SymAcc, 0)
 
                 temp1 = torch.nn.utils.rnn.pad_sequence(temp1)
                 temp2 = torch.tensor(temp2, dtype=torch.int)
@@ -126,7 +136,7 @@ for epoch in range(10):
 
             nll = rnnt_loss(zs, ys.t().contiguous(), xn, yn)
 
-            loss = torch.exp(-nll) * rewards[n]
+            loss = nll * rewards[n]
 
             loss = loss.mean() / N
 

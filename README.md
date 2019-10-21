@@ -12,7 +12,7 @@ Models can be trained locally, but to demonstrate the performance of scripts the
 |:-----:|:------|--------:|:-----:|:-----:|
 | 1     | CTC   | 150000  | 41.10 | 84.68 |
 | 2     | RNN-T | 80000   | 50.98 | 74.51 |
-| 3     | RL    | 2000    | 43.91 | 71.36 |
+| 3     | RL    | 2000    | 40.51 | 70.24 |
 
 
 ## Preprocessing
