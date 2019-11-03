@@ -1,10 +1,4 @@
 import numpy as np
-import scipy.stats
-
-
-def entropy(labels):
-    value, counts = np.unique(labels.flatten(), return_counts=True)
-    return scipy.stats.entropy(counts)
 
 
 class AverageMeter(object):

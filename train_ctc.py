@@ -6,16 +6,16 @@ from torch.optim.lr_scheduler import StepLR
 
 import numpy as np
 
-from data import Labels, AudioDataset, DataLoader, collate_fn_ctc, BucketingSampler
+from data import Labels, AudioDataset, DataLoader, collate_fn, collate_fn_ctc, BucketingSampler
 
 from tqdm import tqdm
 
 from model import AcousticModel
-from utils import AverageMeter, entropy
-
-import decoder
+from utils import AverageMeter
 
 from torch_baidu_ctc import ctc_loss
+from pytorch_edit_distance import remove_repetitions, remove_blank, AverageWER, AverageCER
+
 
 torch.backends.cudnn.benchmark = True
 torch.manual_seed(0)
@@ -25,14 +25,25 @@ labels = Labels()
 
 model = AcousticModel(40, 512, 256, len(labels), n_layers=3, dropout=0.3)
 
-train = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt', labels)
-test = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt', labels)
+train = [
+    '/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt',
+    #'/media/lytic/STORE/ru_open_stt_wav/public_youtube700_aa.txt'
+]
+
+test = [
+    '/media/lytic/STORE/ru_open_stt_wav/asr_calls_2_val.txt',
+    '/media/lytic/STORE/ru_open_stt_wav/buriy_audiobooks_2_val.txt',
+    '/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt'
+]
+
+train = AudioDataset(train, labels)
+test = AudioDataset(test, labels)
 
 train.filter_by_conv(model.conv)
 train.filter_by_length(400)
 
 test.filter_by_conv(model.conv)
-test.filter_by_length(200)
+test.filter_by_length(500)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-5)
 scheduler = StepLR(optimizer, step_size=500, gamma=0.99)
@@ -42,7 +53,10 @@ model.cuda()
 sampler = BucketingSampler(train, 32)
 
 train = DataLoader(train, pin_memory=True, num_workers=4, collate_fn=collate_fn_ctc, batch_sampler=sampler)
-test = DataLoader(test, pin_memory=True, num_workers=4, collate_fn=collate_fn_ctc, batch_size=32)
+test = DataLoader(test, pin_memory=True, num_workers=4, collate_fn=collate_fn, batch_size=32)
+
+blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
+space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 
 for epoch in range(10):
 
@@ -58,7 +72,7 @@ for epoch in range(10):
 
         optimizer.zero_grad()
 
-        xs, xn = model(xs.cuda(non_blocking=True), xn)
+        xs, xn = model(xs, xn)
         xs = log_softmax(xs, dim=-1)
 
         loss = ctc_loss(xs, ys, xn, yn, average_frames=False, reduction="mean")
@@ -79,9 +93,8 @@ for epoch in range(10):
     model.eval()
 
     err = AverageMeter('loss')
-    cer = AverageMeter('cer')
-    wer = AverageMeter('wer')
-    ent = AverageMeter('ent')
+    cer = AverageCER(blank, space)
+    wer = AverageWER(blank, space)
 
     with torch.no_grad():
         progress = tqdm(test)
@@ -90,21 +103,22 @@ for epoch in range(10):
             xs, xn = model(xs.cuda(non_blocking=True), xn)
             xs = log_softmax(xs, dim=-1)
 
-            loss = ctc_loss(xs, ys, xn, yn, average_frames=False, reduction="mean")
-
-            xs = xs.transpose(0, 1).argmax(2)
+            loss = ctc_loss(xs, torch.cat(ys), xn, yn, average_frames=False, reduction="mean")
 
             err.update(loss.item())
-            ent.update(entropy(xs.cpu().numpy()))
 
-            hypothesis = decoder.unpad(xs, xn, labels, remove_repetitions=True)
-            references = decoder.uncat(ys, yn, labels)
+            xs = xs.argmax(2).t().type(torch.int)
+            ys = torch.nn.utils.rnn.pad_sequence(ys, batch_first=True).cuda(non_blocking=True)
+            xn = xn.cuda(non_blocking=True)
+            yn = yn.cuda(non_blocking=True)
 
-            for h, r in zip(hypothesis, references):
-                cer.update(decoder.cer(h, r))
-                wer.update(decoder.wer(h, r))
+            remove_repetitions(xs, xn)
+            remove_blank(xs, xn, blank)
 
-            progress.set_description('epoch %d %s %s %s %s' % (epoch + 1, err, cer, wer, ent))
+            cer.update(xs, ys, xn, yn)
+            wer.update(xs, ys, xn, yn)
+
+            progress.set_description('epoch %d %s %s %s' % (epoch + 1, err, cer, wer))
 
     sys.stderr.write('\n')
 

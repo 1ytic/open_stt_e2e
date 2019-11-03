@@ -1,6 +1,8 @@
 import sys
 import torch
 import torch.nn as nn
+from torch.nn.functional import relu, elu
+from torch.optim.lr_scheduler import StepLR
 
 import numpy as np
 
@@ -9,33 +11,44 @@ from data import Labels, AudioDataset, DataLoader, collate_fn_rnnt, BucketingSam
 from tqdm import tqdm
 
 from model import Transducer
-from utils import AverageMeter, entropy
-
-import decoder
+from utils import AverageMeter
 
 from warp_rnnt import rnnt_loss
+import pytorch_edit_distance
+
 
 torch.backends.cudnn.benchmark = True
-torch.manual_seed(0)
-np.random.seed(0)
+torch.manual_seed(2)
+np.random.seed(2)
 
 labels = Labels()
 
 model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.4)
 
-model.load_state_dict(torch.load('exp/open-stt-rnnt/asr.bin', map_location='cpu'))
+model.load_state_dict(torch.load('exp/asr.bin', map_location='cpu'))
 
-train = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt', labels)
-test = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt', labels)
+train = [
+    '/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt',
+    #'/media/lytic/STORE/ru_open_stt_wav/public_youtube700_aa.txt'
+]
+
+test = [
+    '/media/lytic/STORE/ru_open_stt_wav/asr_calls_2_val.txt',
+    '/media/lytic/STORE/ru_open_stt_wav/buriy_audiobooks_2_val.txt',
+    '/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt'
+]
+
+train = AudioDataset(train, labels)
+test = AudioDataset(test, labels)
 
 train.filter_by_conv(model.encoder.conv)
 train.filter_by_length(400)
 
 test.filter_by_conv(model.encoder.conv)
-test.filter_by_length(200)
+test.filter_by_length(500)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=3e-6, weight_decay=1e-5)
-scheduler = StepLR(optimizer, step_size=300, gamma=0.99)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
+scheduler = StepLR(optimizer, step_size=250, gamma=0.99)
 
 model.cuda()
 
@@ -44,14 +57,15 @@ sampler = BucketingSampler(train, 32)
 train = DataLoader(train, pin_memory=True, num_workers=4, collate_fn=collate_fn_rnnt, batch_sampler=sampler)
 test = DataLoader(test, pin_memory=True, num_workers=4, collate_fn=collate_fn_rnnt, batch_size=16)
 
+blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
+space = torch.tensor([labels.space()], dtype=torch.int).cuda()
+
 N = 10
 alpha = 0.01
 
-for epoch in range(5):
+for epoch in range(10):
 
     sampler.shuffle(epoch)
-
-    model.train()
 
     err = AverageMeter('loss')
     grd = AverageMeter('gradient')
@@ -69,52 +83,45 @@ for epoch in range(5):
         xn = xn.cuda(non_blocking=True)
         yn = yn.cuda(non_blocking=True)
 
+        model.train()
+
         zs, xs, xn = model(xs, ys, xn, yn)
 
-        actions = []
-        lengths = []
-        rewards = torch.empty((N, len(xn)), dtype=torch.float32)
+        model.eval()
 
         with torch.no_grad():
 
             ys = ys.t().contiguous()
 
-            references = decoder.unpad(ys, yn, labels)
+            xs_e = xs.repeat(N, 1, 1)
+            xn_e = xn.repeat(N)
+            ys_e = ys.repeat(N, 1)
+            yn_e = yn.repeat(N)
 
-            for n in range(N):
+            hs_e = model.greedy_decode(xs_e, sampled=True)
 
-                hypothesis = model.greedy_decode(xs, sampled=True)
-                hypothesis = decoder.unpad(hypothesis, xn, labels)
+            pytorch_edit_distance.remove_blank(hs_e, xn_e, blank)
 
-                temp1 = []
-                temp2 = []
+            Err = pytorch_edit_distance.wer(hs_e, ys_e, xn_e, yn_e, blank, space)
 
-                for i, (h, r) in enumerate(zip(hypothesis, references)):
-                    codes = labels(h)
-                    temp1.append(torch.tensor(codes, dtype=torch.int))
-                    temp2.append(len(codes))
-                    
-                    # Reward shaping
-                    # http://www.apsipa.org/proceedings/2018/pdfs/0001934.pdf
-                    
-                    N_ref = len(r)
-                    N_hyp = max(len(codes), 1)
-                    Err = wer(h, r)
-                    SymAcc = 1 - Err / 2 * (1 + N_ref / N_hyp)
-                    
-                    rewards[n, i] = max(SymAcc, 0)
+            xn_e_safe = torch.max(xn_e, torch.ones_like(xn_e)).float()
 
-                temp1 = torch.nn.utils.rnn.pad_sequence(temp1)
-                temp2 = torch.tensor(temp2, dtype=torch.int)
+            SymAcc = 1 - 0.5 * Err * (1 + yn_e.float() / xn_e_safe)
 
-                actions.append(temp1)
-                lengths.append(temp2)
+            rewards = relu(SymAcc).reshape(N, -1)
+
+            hs_e = hs_e.reshape(N, len(xs), -1)
+            xn_e = xn_e.reshape(N, len(xs))
+
+        model.train()
 
         rewards = rewards.cuda()
 
         rwd.update(rewards.mean().item())
 
         rewards -= rewards.mean(dim=0)
+
+        elu(rewards, alpha=0.5, inplace=True)
 
         total_loss = 0
 
@@ -129,12 +136,14 @@ for epoch in range(5):
 
         for n in range(N):
 
-            ys = actions[n].cuda()
-            yn = lengths[n].cuda()
+            ys = hs_e[n]
+            yn = xn_e[n]
 
-            zs = model.forward_decoder(xs, ys, yn)
+            ys = ys[:, :yn.max()].contiguous()
 
-            nll = rnnt_loss(zs, ys.t().contiguous(), xn, yn)
+            zs = model.forward_decoder(xs, ys.t(), yn)
+
+            nll = rnnt_loss(zs, ys, xn, yn)
 
             loss = nll * rewards[n]
 
@@ -162,9 +171,8 @@ for epoch in range(5):
     model.eval()
 
     err = AverageMeter('loss')
-    cer = AverageMeter('cer')
-    wer = AverageMeter('wer')
-    ent = AverageMeter('ent')
+    cer = pytorch_edit_distance.AverageCER(blank, space)
+    wer = pytorch_edit_distance.AverageWER(blank, space)
 
     with torch.no_grad():
         progress = tqdm(test)
@@ -184,14 +192,14 @@ for epoch in range(5):
             xs = model.greedy_decode(xs)
 
             err.update(loss.item())
-            ent.update(entropy(xs))
 
-            hypothesis = decoder.unpad(xs, xn, labels)
-            references = decoder.unpad(ys, yn, labels)
+            pytorch_edit_distance.remove_blank(xs, xn, blank)
 
-            for h, r in zip(hypothesis, references):
-                cer.update(decoder.cer(h, r))
-                wer.update(decoder.wer(h, r))
+            wer.update(xs, ys, xn, yn)
+            cer.update(xs, ys, xn, yn)
 
-            progress.set_description('epoch %d %s %s %s %s' % (epoch + 1, err, cer, wer, ent))
-        sys.stderr.write('\n')
+            progress.set_description('epoch %d %s %s %s' % (epoch + 1, err, cer, wer))
+
+    sys.stderr.write('\n')
+
+    torch.save(model.state_dict(), 'exp/rl.bin')
