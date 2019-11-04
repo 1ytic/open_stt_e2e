@@ -8,11 +8,18 @@ Minimal set of scripts for training language and acoustic models for the speech 
 
 Models can be trained locally, but to demonstrate the performance of scripts the [kaggle](https://www.kaggle.com) platform was choosen.
 
-| Stage | Loss  | Updates | CER   | WER   |
-|:-----:|:------|--------:|:-----:|:-----:|
-| 1     | CTC   | 150000  | 41.10 | 84.68 |
-| 2     | RNN-T | 80000   | 50.98 | 74.51 |
-| 3     | RL    | 2000    | 40.51 | 70.24 |
+| Stage | Loss  | Updates | CER  | WER  |
+|:-----:|:------|--------:|:----:|:----:|
+| 1     | CTC   | 140000  | 38.1 | 82.8 |
+| 2     | RNN-T | 75000   | 49.8 | 73.4 |
+| 3     | RL    | 5000    | 38.1 | 66.9 |
+
+
+## Requirements
+
+- [torch-baidu-ctc](https://github.com/jpuigcerver/pytorch-baidu-ctc)
+- [warp-rnnt](https://github.com/1ytic/warp-rnnt)
+- [pytorch-edit-distance](https://github.com/1ytic/pytorch-edit-distance)
 
 
 ## Preprocessing
@@ -27,7 +34,6 @@ Language model is character-based and not case sensitive.
 
 
 ## Datasets
-
 
 - [open-stt-text](https://www.kaggle.com/sorokin/open-stt-text) - transcriptions for training a language model
 
