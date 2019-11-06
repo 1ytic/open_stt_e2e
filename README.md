@@ -17,7 +17,7 @@ Models can be trained locally, but to demonstrate the performance of scripts the
 
 ## Requirements
 
-- [torch-baidu-ctc](https://github.com/jpuigcerver/pytorch-baidu-ctc)
+- PyTorch >= 1.3 (with bug fix [#27460](https://github.com/pytorch/pytorch/pull/27460))
 - [warp-rnnt](https://github.com/1ytic/warp-rnnt)
 - [pytorch-edit-distance](https://github.com/1ytic/pytorch-edit-distance)
 

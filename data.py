@@ -1,13 +1,11 @@
 import torch
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import Sampler
 from torch.nn.utils.rnn import pad_sequence
-from tqdm import tqdm
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 
 class Labels(object):
@@ -30,20 +28,6 @@ class Labels(object):
 
     def blank(self):
         return self.index['<BLANK>']
-
-    def string(self, targets, remove_repetitions=False):
-        targets = list(targets.cpu().numpy())
-        blank = self.blank()
-        if remove_repetitions:
-            last_t = -1
-            unique = []
-            for t in targets:
-                if t != last_t:
-                    last_t = t
-                    unique.append(t)
-            targets = unique
-        sentence = [self.chars[t] for t in targets if t != blank]
-        return ''.join(sentence)
 
     def is_accepted(self, sentence):
         sentence = sentence.strip().upper()
@@ -131,7 +115,7 @@ class AudioDataset(Dataset):
 class BucketingSampler(Sampler):
 
     def __init__(self, data, batch_size=1):
-        super(BucketingSampler, self).__init__(data)
+        super().__init__(data)
         index = list(range(0, len(data)))
         self.bins = [index[i:i + batch_size] for i in range(0, len(index), batch_size)]
 
@@ -147,7 +131,7 @@ class BucketingSampler(Sampler):
         np.random.RandomState(epoch).shuffle(self.bins)
 
 
-def collate_fn(batch):
+def collate_audio(batch):
 
     batch = sorted(batch, key=lambda b: b[0].shape[0], reverse=True)
 
@@ -168,19 +152,25 @@ def collate_fn(batch):
     xs = pad_sequence(xs, batch_first=True)
     xs = xs.unsqueeze(dim=1).transpose(2, 3).contiguous()
 
+    # N x S
+    ys = pad_sequence(ys, batch_first=True)
+
     return xs, ys, xn, yn
 
 
-def collate_fn_ctc(batch):
-    xs, ys, xn, yn = collate_fn(batch)
-    ys = torch.cat(ys)
-    return xs, ys, xn, yn
+class DataLoaderCuda(tqdm):
 
+    def __init__(self, *args, **kwargs):
+        kwargs['num_workers'] = 4
+        kwargs['pin_memory'] = True
+        super().__init__(DataLoader(*args, **kwargs))
 
-def collate_fn_rnnt(batch):
-    xs, ys, xn, yn = collate_fn(batch)
-    ys = pad_sequence(ys)
-    return xs, ys, xn, yn
+    def __iter__(self):
+        for cpu in super().__iter__():
+            gpu = []
+            for values in cpu:
+                gpu.append(values.cuda(non_blocking=True))
+            yield gpu
 
 
 if __name__ == '__main__':
@@ -189,7 +179,7 @@ if __name__ == '__main__':
 
     dataset = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt', labels)
 
-    loader = DataLoader(dataset, num_workers=4, batch_size=32, collate_fn=collate_fn)
+    loader = DataLoader(dataset, batch_size=32, collate_fn=collate_audio)
 
     x_lengths = []
     y_lengths = []
@@ -197,6 +187,9 @@ if __name__ == '__main__':
     for _, _, xn, yn in tqdm(loader):
         x_lengths.extend(list(xn.numpy()))
         y_lengths.extend(list(yn.numpy()))
+
+    import seaborn as sns
+    import matplotlib.pyplot as plt
 
     plt.title('x lengths')
     sns.distplot(x_lengths)

@@ -1,14 +1,11 @@
 import sys
 import torch
+import numpy as np
 import torch.nn as nn
 from torch.nn.functional import relu, elu
 from torch.optim.lr_scheduler import StepLR
 
-import numpy as np
-
-from data import Labels, AudioDataset, DataLoader, collate_fn_rnnt, BucketingSampler
-
-from tqdm import tqdm
+from data import Labels, AudioDataset, DataLoaderCuda, collate_audio, BucketingSampler
 
 from model import Transducer
 from utils import AverageMeter
@@ -24,8 +21,8 @@ np.random.seed(2)
 labels = Labels()
 
 model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.4)
-
 model.load_state_dict(torch.load('exp/asr.bin', map_location='cpu'))
+model.cuda()
 
 train = [
     '/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt',
@@ -50,12 +47,10 @@ test.filter_by_length(500)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
 scheduler = StepLR(optimizer, step_size=250, gamma=0.99)
 
-model.cuda()
-
 sampler = BucketingSampler(train, 32)
 
-train = DataLoader(train, pin_memory=True, num_workers=4, collate_fn=collate_fn_rnnt, batch_sampler=sampler)
-test = DataLoader(test, pin_memory=True, num_workers=4, collate_fn=collate_fn_rnnt, batch_size=16)
+train = DataLoaderCuda(train, collate_fn=collate_audio, batch_sampler=sampler)
+test = DataLoaderCuda(test, collate_fn=collate_audio, batch_size=16)
 
 blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
 space = torch.tensor([labels.space()], dtype=torch.int).cuda()
@@ -63,7 +58,7 @@ space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 N = 10
 alpha = 0.01
 
-for epoch in range(10):
+for epoch in range(20):
 
     sampler.shuffle(epoch)
 
@@ -73,25 +68,17 @@ for epoch in range(10):
 
     num_batch = 0
 
-    progress = tqdm(train)
-    for xs, ys, xn, yn in progress:
+    for xs, ys, xn, yn in train:
 
         optimizer.zero_grad()
 
-        xs = xs.cuda(non_blocking=True)
-        ys = ys.cuda(non_blocking=True)
-        xn = xn.cuda(non_blocking=True)
-        yn = yn.cuda(non_blocking=True)
-
         model.train()
 
-        zs, xs, xn = model(xs, ys, xn, yn)
+        zs, xs, xn = model(xs, ys.t(), xn, yn)
 
         model.eval()
 
         with torch.no_grad():
-
-            ys = ys.t().contiguous()
 
             xs_e = xs.repeat(N, 1, 1)
             xn_e = xn.repeat(N)
@@ -161,11 +148,11 @@ for epoch in range(10):
         err.update(total_loss)
         grd.update(grad_norm)
         
-        progress.set_description('epoch %d %s %s %s' % (epoch + 1, err, grd, rwd))
+        train.set_description('epoch %d %s %s %s' % (epoch + 1, err, grd, rwd))
 
         num_batch += 1
         if num_batch == 500:
-            progress.close()
+            train.close()
             break
 
     model.eval()
@@ -175,17 +162,10 @@ for epoch in range(10):
     wer = pytorch_edit_distance.AverageWER(blank, space)
 
     with torch.no_grad():
-        progress = tqdm(test)
-        for xs, ys, xn, yn in progress:
 
-            xs = xs.cuda(non_blocking=True)
-            ys = ys.cuda(non_blocking=True)
-            xn = xn.cuda(non_blocking=True)
-            yn = yn.cuda(non_blocking=True)
+        for xs, ys, xn, yn in test:
 
-            zs, xs, xn = model(xs, ys, xn, yn)
-
-            ys = ys.t().contiguous()
+            zs, xs, xn = model(xs, ys.t(), xn, yn)
 
             loss = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
 
@@ -198,7 +178,7 @@ for epoch in range(10):
             wer.update(xs, ys, xn, yn)
             cer.update(xs, ys, xn, yn)
 
-            progress.set_description('epoch %d %s %s %s' % (epoch + 1, err, cer, wer))
+            test.set_description('epoch %d %s %s %s' % (epoch + 1, err, cer, wer))
 
     sys.stderr.write('\n')
 

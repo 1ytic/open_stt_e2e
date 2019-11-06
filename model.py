@@ -73,7 +73,7 @@ class MaskConv(nn.Module):
 
                 n, c, d, t = x.size()
 
-                mask = torch.zeros((n, 1, 1, t), dtype=torch.uint8, device=x.device)
+                mask = torch.zeros((n, 1, 1, t), dtype=torch.bool, device=x.device)
 
                 for i, length in enumerate(lengths):
                     start = length.item()
@@ -93,7 +93,8 @@ class MaskConv(nn.Module):
 
 class AcousticModel(nn.Module):
 
-    def __init__(self, input_size, hidden_size, prj_size, output_size, n_layers=1, dropout=0, checkpoint=''):
+    def __init__(self, input_size, hidden_size, prj_size, output_size,
+                 n_layers=1, dropout=0, checkpoint=''):
         super(AcousticModel, self).__init__()
         self.conv = MaskConv(nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=(21, 11), stride=(2, 2), padding=(10, 5), bias=False),
@@ -130,12 +131,14 @@ class AcousticModel(nn.Module):
     def forward(self, x, lengths):
         x, lengths = self.features(x, lengths)
         x = self.fc(x)  # T x N x H
+        x = log_softmax(x, dim=-1)
         return x, lengths
 
 
 class LanguageModel(nn.Module):
 
-    def __init__(self, emb_size, hidden_size, prj_size, vocab_size, n_layers=1, dropout=0, blank=0, checkpoint=''):
+    def __init__(self, emb_size, hidden_size, prj_size, vocab_size,
+                 n_layers=1, dropout=0, blank=0, checkpoint=''):
         super(LanguageModel, self).__init__()
         # The gradient for blank input is always zero.
         self.emb = nn.Embedding(vocab_size, emb_size, padding_idx=blank)
@@ -183,15 +186,19 @@ class LanguageModel(nn.Module):
 
 class Transducer(nn.Module):
 
-    def __init__(self, emb_size, vocab_size, hidden_size, prj_size, am_layers=3, lm_layers=2, dropout=0, blank=0,
+    def __init__(self, emb_size, vocab_size, hidden_size, prj_size,
+                 am_layers=3, lm_layers=2, dropout=0, blank=0,
                  am_checkpoint='', lm_checkpoint=''):
         super(Transducer, self).__init__()
 
         self.blank = blank
 
-        self.encoder = AcousticModel(40, hidden_size, prj_size, vocab_size, n_layers=am_layers, dropout=dropout,
+        self.encoder = AcousticModel(40, hidden_size, prj_size, vocab_size,
+                                     n_layers=am_layers, dropout=dropout,
                                      checkpoint=am_checkpoint)
-        self.decoder = LanguageModel(emb_size, hidden_size, prj_size, vocab_size, n_layers=lm_layers, dropout=dropout, blank=blank,
+
+        self.decoder = LanguageModel(emb_size, hidden_size, prj_size, vocab_size,
+                                     n_layers=lm_layers, dropout=dropout, blank=blank,
                                      checkpoint=lm_checkpoint)
 
         for p in self.encoder.fc.parameters():

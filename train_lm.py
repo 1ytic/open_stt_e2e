@@ -1,17 +1,13 @@
 import sys
 import torch
-import torch.nn as nn
-
 import numpy as np
+import torch.nn as nn
+from torch.optim.lr_scheduler import StepLR
 
-from data import Labels, TextDataset, DataLoader
-
-from tqdm import tqdm
+from data import Labels, TextDataset, DataLoaderCuda
 
 from model import LanguageModel
 from utils import AverageMeter
-
-from torch.optim.lr_scheduler import StepLR
 
 
 def detach_hidden(h):
@@ -66,12 +62,9 @@ for epoch in range(20):
 
     train.shuffle(epoch)
 
-    loader = DataLoader(train, pin_memory=True, num_workers=4, batch_size=bptt, drop_last=True)
-    progress = tqdm(loader)
+    loader = DataLoaderCuda(train, batch_size=bptt, drop_last=True)
 
-    for inputs, targets in progress:
-        inputs = inputs.cuda(non_blocking=True)
-        targets = targets.cuda(non_blocking=True)
+    for inputs, targets in loader:
 
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
@@ -94,21 +87,19 @@ for epoch in range(20):
 
         lr = scheduler.get_lr()[0]
 
-        progress.set_description('epoch %d lr %.6f %s %s' % (epoch + 1, lr, err, grd))
+        loader.set_description('epoch %d lr %.6f %s %s' % (epoch + 1, lr, err, grd))
 
     model.eval()
 
     err = AverageMeter('loss')
 
-    loader = DataLoader(test, pin_memory=True, num_workers=4, batch_size=bptt, drop_last=True)
-    progress = tqdm(loader)
+    loader = DataLoaderCuda(test, batch_size=bptt, drop_last=True)
 
     hidden = model.step_init(batch_size)
 
     with torch.no_grad():
-        for inputs, targets in progress:
-            inputs = inputs.cuda(non_blocking=True)
-            targets = targets.cuda(non_blocking=True)
+
+        for inputs, targets in loader:
 
             output, hidden = model.step_forward(inputs, hidden)
 
@@ -116,7 +107,7 @@ for epoch in range(20):
 
             err.update(loss.item())
 
-            progress.set_description('epoch %d %s' % (epoch + 1, err))
+            loader.set_description('epoch %d %s' % (epoch + 1, err))
 
     sys.stderr.write('\n')
 
