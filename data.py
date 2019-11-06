@@ -158,19 +158,26 @@ def collate_audio(batch):
     return xs, ys, xn, yn
 
 
-class DataLoaderCuda(tqdm):
+class DataLoaderCuda(DataLoader):
 
     def __init__(self, *args, **kwargs):
         kwargs['num_workers'] = 4
         kwargs['pin_memory'] = True
-        super().__init__(DataLoader(*args, **kwargs))
+        super().__init__(*args, **kwargs)
 
     def __iter__(self):
-        for cpu in super().__iter__():
+        self.progress = tqdm(super().__iter__())
+        for cpu in self.progress:
             gpu = []
             for values in cpu:
                 gpu.append(values.cuda(non_blocking=True))
             yield gpu
+
+    def set_description(self, desc):
+        self.progress.set_description(desc)
+
+    def close(self):
+        self.progress.close()
 
 
 if __name__ == '__main__':
