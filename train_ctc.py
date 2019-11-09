@@ -44,7 +44,7 @@ test.filter_by_length(500)
 optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-5)
 scheduler = StepLR(optimizer, step_size=1000, gamma=0.99)
 
-sampler = BucketingSampler(train, 32)
+sampler = BucketingSampler(train, 64)
 
 train = DataLoaderCuda(train, collate_fn=collate_audio, batch_sampler=sampler)
 test = DataLoaderCuda(test, collate_fn=collate_audio, batch_size=32)
@@ -54,7 +54,7 @@ space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 
 ctc_loss = nn.CTCLoss(blank=labels.blank(), reduction='none', zero_infinity=True)
 
-for epoch in range(20):
+for epoch in range(30):
 
     sampler.shuffle(epoch)
 
@@ -72,7 +72,7 @@ for epoch in range(20):
         loss = ctc_loss(xs, ys, xn, yn).mean()
         loss.backward()
 
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 200)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 100)
 
         optimizer.step()
         scheduler.step()

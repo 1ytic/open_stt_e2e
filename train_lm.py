@@ -74,7 +74,7 @@ for epoch in range(20):
 
         output, hidden = model.step_forward(inputs, hidden)
 
-        loss = criterion(output.view(-1, num_labels), targets.view(-1))
+        loss = criterion(output, targets.view(-1))
         loss.backward()
 
         grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5)
@@ -103,7 +103,7 @@ for epoch in range(20):
 
             output, hidden = model.step_forward(inputs, hidden)
 
-            loss = criterion(output.view(-1, num_labels), targets.view(-1))
+            loss = criterion(output, targets.view(-1))
 
             err.update(loss.item())
 

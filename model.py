@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.functional import log_softmax
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, PackedSequence
 
 
 def decrease_dim(x, layer, dim=1):
@@ -17,17 +17,6 @@ def decrease_dim(x, layer, dim=1):
 
 def is_time_decrease(layer):
     return decrease_dim(100, layer) != 100
-
-
-class BatchNorm1d(nn.BatchNorm1d):
-
-    def forward(self, x):
-        shape = list(x.size())
-        x = x.view(-1, self.num_features)
-        x = super().forward(x)
-        shape = shape[:-1] + [self.num_features]
-        x = x.view(shape)
-        return x
 
 
 class MaskConv(nn.Module):
@@ -108,30 +97,27 @@ class AcousticModel(nn.Module):
                           bidirectional=True)
         self.prj = nn.Sequential(nn.Dropout(dropout),
                                  nn.Linear(hidden_size, prj_size, bias=False))
-        self.fc = nn.Sequential(BatchNorm1d(prj_size), nn.ReLU(inplace=True),
+        self.fc = nn.Sequential(nn.BatchNorm1d(prj_size), nn.ReLU(inplace=True),
                                 nn.Linear(prj_size, output_size))
         if len(checkpoint):
             print(checkpoint)
             self.load_state_dict(torch.load(checkpoint, map_location='cpu'))
 
-    def features(self, x, lengths):
+    def forward(self, x, lengths, head=True):
         # Apply 2d convolutions
         x, lengths = self.conv(x, lengths)
         # Pack padded batch of sequences for RNN module
         x = pack_padded_sequence(x, lengths)
         # Forward pass through GRU
         x, _ = self.rnn(x)
-        # Unpack padding
-        x, _ = pad_packed_sequence(x)
         # Sum bidirectional GRU outputs
-        x = x[:, :, :self.rnn.hidden_size] + x[:, :, self.rnn.hidden_size:]
-        x = self.prj(x)
-        return x, lengths
-
-    def forward(self, x, lengths):
-        x, lengths = self.features(x, lengths)
-        x = self.fc(x)  # T x N x H
-        x = log_softmax(x, dim=-1)
+        f, b = x.data.split(self.rnn.hidden_size, 1)
+        data = self.prj(f + b)
+        if head:
+            data = self.fc(data)
+            data = log_softmax(data, dim=-1)
+        x = PackedSequence(data, x.batch_sizes, x.sorted_indices, x.unsorted_indices)
+        x, _ = pad_packed_sequence(x)
         return x, lengths
 
 
@@ -146,25 +132,24 @@ class LanguageModel(nn.Module):
                            dropout=dropout if n_layers > 1 else 0)
         self.prj = nn.Sequential(nn.Dropout(dropout),
                                  nn.Linear(hidden_size, prj_size, bias=False))
-        self.fc = nn.Sequential(BatchNorm1d(prj_size), nn.ReLU(inplace=True),
+        self.fc = nn.Sequential(nn.BatchNorm1d(prj_size), nn.ReLU(inplace=True),
                                 nn.Linear(prj_size, vocab_size))
         if len(checkpoint):
             print(checkpoint)
             self.load_state_dict(torch.load(checkpoint, map_location='cpu'))
 
-    def features(self, x, lengths):
+    def forward(self, x, lengths, head=True):
         init = torch.zeros((1, x.shape[1]), device=x.device).long()
         x = torch.cat([init, x.long()])
         x = self.emb(x)
         x = pack_padded_sequence(x, lengths + 1, enforce_sorted=False)
         x, _ = self.rnn(x)
+        data = self.prj(x.data)
+        if head:
+            data = self.fc(data)
+            data = log_softmax(data, dim=-1)
+        x = PackedSequence(data, x.batch_sizes, x.sorted_indices, x.unsorted_indices)
         x, _ = pad_packed_sequence(x)
-        x = self.prj(x)
-        return x
-
-    def forward(self, x, lengths):
-        x = self.features(x, lengths)
-        x = self.fc(x)  # T x N x H
         return x
 
     def step_features(self, x, h=None):
@@ -175,6 +160,7 @@ class LanguageModel(nn.Module):
 
     def step_forward(self, x, h=None):
         x, h = self.step_features(x, h)
+        x = x.view(-1, x.size(-1))
         x = self.fc(x)  # T x N x H
         return x, h
 
@@ -193,39 +179,35 @@ class Transducer(nn.Module):
 
         self.blank = blank
 
-        self.encoder = AcousticModel(40, hidden_size, prj_size, vocab_size,
-                                     n_layers=am_layers, dropout=dropout,
-                                     checkpoint=am_checkpoint)
+        self.am = AcousticModel(40, hidden_size, prj_size, vocab_size,
+                                n_layers=am_layers, dropout=dropout,
+                                checkpoint=am_checkpoint)
 
-        self.decoder = LanguageModel(emb_size, hidden_size, prj_size, vocab_size,
-                                     n_layers=lm_layers, dropout=dropout, blank=blank,
-                                     checkpoint=lm_checkpoint)
+        self.lm = LanguageModel(emb_size, hidden_size, prj_size, vocab_size,
+                                n_layers=lm_layers, dropout=dropout, blank=blank,
+                                checkpoint=lm_checkpoint)
 
-        for p in self.encoder.fc.parameters():
+        for p in self.am.fc.parameters():
             p.requires_grads = False
-        for p in self.decoder.fc.parameters():
+        for p in self.lm.fc.parameters():
             p.requires_grads = False
 
         self.fc = nn.Linear(prj_size, vocab_size)
 
-    def joint(self, x, y):
-        z = torch.tanh(x + y)
-        z = self.fc(z)
-        z = log_softmax(z, dim=-1)
-        return z
+        self.stream_am = torch.cuda.Stream()
+        self.stream_lm = torch.cuda.Stream()
 
-    def forward(self, xs, ys, xn, yn):
-        # encoder
-        xs, xn = self.encoder.features(xs, xn)
+    def forward_acoustic(self, xs, xn):
+        xs, xn = self.am(xs, xn, head=False)
         xs = xs.transpose(0, 1)
-        # decoder
-        zs = self.forward_decoder(xs, ys, yn)
-        return zs, xs, xn
+        return xs, xn
 
-    def forward_decoder(self, xs, ys, yn):
-        # decoder
-        ys = self.decoder.features(ys, yn)
+    def forward_language(self, ys, yn):
+        ys = self.lm(ys, yn, head=False)
         ys = ys.transpose(0, 1)
+        return ys
+
+    def forward_joint(self, xs, ys):
         # align
         n, t, x_h = xs.size()
         n, u, y_h = ys.size()
@@ -235,12 +217,34 @@ class Transducer(nn.Module):
         zs = self.joint(x, y)
         return zs
 
+    def joint(self, x, y):
+        z = torch.tanh(x + y)
+        z = self.fc(z)
+        z = log_softmax(z, dim=-1)
+        return z
+
+    def forward(self, xs, ys, xn, yn):
+        # wait all inputs
+        torch.cuda.synchronize()
+        # acoustic model
+        with torch.cuda.stream(self.stream_am):
+            xs, xn = self.forward_acoustic(xs, xn)
+        # language model
+        with torch.cuda.stream(self.stream_lm):
+            ys = self.forward_language(ys, yn)
+        # synchronize two flows
+        torch.cuda.synchronize()
+        # joint
+        zs = self.forward_joint(xs, ys)
+        return zs, xs, xn
+
     def greedy_decode(self, xs, sampled=False):
 
         n, t, h = xs.size()
 
         c = torch.zeros((1, n), device=xs.device).long()
-        yd, (hd, cd) = self.decoder.step_features(c)
+
+        yd, (hd, cd) = self.lm.step_features(c)
 
         s = torch.zeros((n, t), device=xs.device, dtype=torch.int)
 
@@ -260,7 +264,7 @@ class Transducer(nn.Module):
             mask = c == self.blank
             mask = mask.unsqueeze(-1)
 
-            yd_next, (hd_next, cd_next) = self.decoder.step_features(c, (hd, cd))
+            yd_next, (hd_next, cd_next) = self.lm.step_features(c, (hd, cd))
 
             yd = torch.where(mask, yd, yd_next)
             hd = torch.where(mask, hd, hd_next)

@@ -19,7 +19,7 @@ np.random.seed(1)
 
 labels = Labels()
 
-model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.3,
+model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.4,
                    am_checkpoint='exp/am.bin', lm_checkpoint='exp/lm.bin')
 model.cuda()
 
@@ -37,14 +37,20 @@ test = [
 train = AudioDataset(train, labels)
 test = AudioDataset(test, labels)
 
-train.filter_by_conv(model.encoder.conv)
+train.filter_by_conv(model.am.conv)
 train.filter_by_length(400)
 
-test.filter_by_conv(model.encoder.conv)
+test.filter_by_conv(model.am.conv)
 test.filter_by_length(500)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-5)
-scheduler = StepLR(optimizer, step_size=500, gamma=0.99)
+parameters = [
+    {"params": model.am.parameters(), "lr": 3e-5},
+    {"params": model.lm.parameters(), "lr": 3e-5},
+    {"params": model.fc.parameters(), "lr": 3e-4}
+]
+
+optimizer = torch.optim.Adam(parameters, weight_decay=1e-5)
+scheduler = StepLR(optimizer, step_size=1000, gamma=0.99)
 
 sampler = BucketingSampler(train, 32)
 
@@ -72,7 +78,7 @@ for epoch in range(10):
         loss = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
         loss.backward()
 
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 100)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 50)
 
         optimizer.step()
         scheduler.step()

@@ -38,10 +38,10 @@ test = [
 train = AudioDataset(train, labels)
 test = AudioDataset(test, labels)
 
-train.filter_by_conv(model.encoder.conv)
+train.filter_by_conv(model.am.conv)
 train.filter_by_length(400)
 
-test.filter_by_conv(model.encoder.conv)
+test.filter_by_conv(model.am.conv)
 test.filter_by_length(500)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
@@ -58,7 +58,7 @@ space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 N = 10
 alpha = 0.01
 
-for epoch in range(20):
+for epoch in range(16):
 
     sampler.shuffle(epoch)
 
@@ -91,9 +91,7 @@ for epoch in range(20):
 
             Err = pytorch_edit_distance.wer(hs_e, ys_e, xn_e, yn_e, blank, space)
 
-            xn_e_safe = torch.max(xn_e, torch.ones_like(xn_e)).float()
-
-            SymAcc = 1 - 0.5 * Err * (1 + yn_e.float() / xn_e_safe)
+            SymAcc = 1 - 0.5 * Err * (1 + yn_e.float() / xn_e.clamp_min(1).float())
 
             rewards = relu(SymAcc).reshape(N, -1)
 
@@ -108,7 +106,7 @@ for epoch in range(20):
 
         rewards -= rewards.mean(dim=0)
 
-        elu(rewards, alpha=0.5, inplace=True)
+        elu(rewards, alpha=0.7, inplace=True)
 
         total_loss = 0
 
@@ -128,7 +126,9 @@ for epoch in range(20):
 
             ys = ys[:, :yn.max()].contiguous()
 
-            zs = model.forward_decoder(xs, ys.t(), yn)
+            zs = model.forward_language(ys.t(), yn)
+
+            zs = model.forward_joint(xs, zs)
 
             nll = rnnt_loss(zs, ys, xn, yn)
 
