@@ -18,5 +18,11 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
         self.std = np.sqrt(self.sum2 / self.count - self.avg * self.avg)
 
+    def summary(self, writer, epoch):
+        if self.count > 0:
+            writer.add_scalar(self.title, self.avg, epoch)
+
     def __str__(self):
-        return '%s %.4f\u00B1%.2f' % (self.title, self.avg, self.std)
+        if self.count > 0:
+            return '%s %.4f\u00B1%.2f' % (self.title, self.avg, self.std)
+        return ''

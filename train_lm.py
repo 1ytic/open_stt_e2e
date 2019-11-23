@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.tensorboard import SummaryWriter
 
 from data import Labels, TextDataset, DataLoaderCuda
 
@@ -22,24 +23,26 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 labels = Labels()
-num_labels = len(labels)
 
-model = LanguageModel(128, 512, 256, num_labels, n_layers=3, dropout=0.3)
+model = LanguageModel(128, 512, 256, len(labels), n_layers=3, dropout=0.3)
 model.cuda()
 
 bptt = 8
-batch_size = 32
+batch_size = 64
+
+root = '/media/lytic/STORE/ru_open_stt_wav'
 
 train = [
-    '/media/lytic/STORE/ru_open_stt_wav/text/public_youtube1120_hq.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/text/public_youtube1120.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/text/public_youtube700.txt'
+    root + '/asr_public_phone_calls_1.csv',
+    root + '/public_youtube1120_hq.csv',
+    root + '/public_youtube700_aa.csv',
+    root + '/public_youtube700_ab.csv'
 ]
 
 test = [
-    '/media/lytic/STORE/ru_open_stt_wav/text/asr_calls_2_val.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/text/buriy_audiobooks_2_val.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/text/public_youtube700_val.txt'
+    root + '/asr_calls_2_val.csv',
+    root + '/buriy_audiobooks_2_val.csv',
+    root + '/public_youtube700_val.csv'
 ]
 
 train = TextDataset(train, labels, batch_size)
@@ -51,20 +54,25 @@ criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-5)
 scheduler = StepLR(optimizer, step_size=10000, gamma=0.99)
 
-for epoch in range(20):
+step = 0
+writer = SummaryWriter(comment="_lm_bptt8_bs64_gn1_do0.3")
+
+for epoch in range(1, 11):
 
     model.train()
 
     hidden = model.step_init(batch_size)
 
-    err = AverageMeter('loss')
-    grd = AverageMeter('gradient')
+    err = AverageMeter('Loss/train')
+    grd = AverageMeter('Gradient/train')
 
     train.shuffle(epoch)
 
     loader = DataLoaderCuda(train, batch_size=bptt, drop_last=True)
 
     for inputs, targets in loader:
+
+        step += 1
 
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
@@ -77,7 +85,7 @@ for epoch in range(20):
         loss = criterion(output, targets.view(-1))
         loss.backward()
 
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5)
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1)
 
         optimizer.step()
         scheduler.step()
@@ -85,13 +93,20 @@ for epoch in range(20):
         err.update(loss.item())
         grd.update(grad_norm)
 
-        lr = scheduler.get_lr()[0]
+        writer.add_scalar(err.title + '/steps', loss.item(), step)
+        writer.add_scalar(grd.title + '/steps', grad_norm, step)
 
-        loader.set_description('epoch %d lr %.6f %s %s' % (epoch + 1, lr, err, grd))
+        loader.set_description('Epoch %d %s %s' % (epoch, err, grd))
 
     model.eval()
 
-    err = AverageMeter('loss')
+    for i, lr in enumerate(scheduler.get_lr()):
+        writer.add_scalar('LR/%d' % i, lr, epoch)
+
+    err.summary(writer, epoch)
+    grd.summary(writer, epoch)
+
+    err = AverageMeter('Loss/test')
 
     loader = DataLoaderCuda(test, batch_size=bptt, drop_last=True)
 
@@ -107,8 +122,15 @@ for epoch in range(20):
 
             err.update(loss.item())
 
-            loader.set_description('epoch %d %s' % (epoch + 1, err))
+            loader.set_description('Epoch %d %s' % (epoch, err))
 
     sys.stderr.write('\n')
 
-    torch.save(model.state_dict(), 'exp/lm.bin')
+    err.summary(writer, epoch)
+
+    writer.flush()
+
+    torch.save(model.state_dict(), writer.log_dir + '/model%d.bin' % epoch)
+
+writer.close()
+

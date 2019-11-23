@@ -1,3 +1,4 @@
+import sys
 import torch
 import numpy as np
 import pandas as pd
@@ -80,9 +81,13 @@ class TextDataset(Dataset):
 
 class AudioDataset(Dataset):
 
-    def __init__(self, source, labels):
+    def __init__(self, source, labels, model=None, length=0):
         self.data = load_data(source)
         self.labels = labels
+        if model is not None:
+            self.filter_by_model(model)
+        if length > 0:
+            self.filter_by_length(length)
 
     def __len__(self):
         return len(self.data)
@@ -96,9 +101,9 @@ class AudioDataset(Dataset):
     def filter_by_length(self, length):
         self.filter(self.data[self.data['frames'] < length])
 
-    def filter_by_conv(self, conv):
+    def filter_by_model(self, model):
         frames = self.data['frames'].values
-        frames = conv.output_time(frames)
+        frames = model.output_time(frames)
         index = []
         for i, text in enumerate(self.data['text'].values):
             if self.labels.required_frames(text) <= frames[i]:
@@ -114,18 +119,18 @@ class AudioDataset(Dataset):
 
 class BucketingSampler(Sampler):
 
-    def __init__(self, data, batch_size=1):
+    def __init__(self, data, size=1, limit=sys.maxsize):
         super().__init__(data)
-        index = list(range(0, len(data)))
-        self.bins = [index[i:i + batch_size] for i in range(0, len(index), batch_size)]
+        index = list(range(len(data)))
+        self.bins = [index[i:i + size] for i in range(0, len(index), size)]
+        self.limit = limit
 
     def __iter__(self):
-        for batch in self.bins:
-            np.random.shuffle(batch)
+        for batch in self.bins[:self.limit]:
             yield batch
 
     def __len__(self):
-        return len(self.bins)
+        return len(self.bins[:self.limit])
 
     def shuffle(self, epoch):
         np.random.RandomState(epoch).shuffle(self.bins)
@@ -150,7 +155,7 @@ def collate_audio(batch):
 
     # N x 1 x D x T
     xs = pad_sequence(xs, batch_first=True)
-    xs = xs.unsqueeze(dim=1).transpose(2, 3).contiguous()
+    xs = xs.unsqueeze(dim=1).transpose(2, 3)
 
     # N x S
     ys = pad_sequence(ys, batch_first=True)
@@ -173,6 +178,9 @@ class DataLoaderCuda(DataLoader):
                 gpu.append(values.cuda(non_blocking=True))
             yield gpu
 
+    def shuffle(self, epoch):
+        self.batch_sampler.shuffle(epoch)
+
     def set_description(self, desc):
         self.progress.set_description(desc)
 
@@ -180,11 +188,47 @@ class DataLoaderCuda(DataLoader):
         self.progress.close()
 
 
+def split_train_dev_test(root, labels, model, batch_size=32):
+
+    train = [
+        root + '/asr_public_phone_calls_1.csv',
+        root + '/public_youtube1120_hq.csv',
+        root + '/public_youtube700_aa.csv',
+        root + '/public_youtube700_ab.csv'
+    ]
+
+    dev = [
+        root + '/asr_public_phone_calls_1.csv',
+        root + '/public_youtube1120_hq.csv',
+    ]
+
+    test = [
+        root + '/asr_calls_2_val.csv',
+        root + '/buriy_audiobooks_2_val.csv',
+        root + '/public_youtube700_val.csv'
+    ]
+
+    train = AudioDataset(train, labels, model, 400)
+    dev = AudioDataset(dev, labels, model, 1000)
+    test = AudioDataset(test, labels, model, 1000)
+
+    sampler1 = BucketingSampler(train, size=batch_size)
+    sampler2 = BucketingSampler(dev, size=1, limit=1000)
+
+    sampler2.shuffle(0)
+
+    train = DataLoaderCuda(train, collate_fn=collate_audio, batch_sampler=sampler1)
+    dev = DataLoaderCuda(dev, collate_fn=collate_audio, batch_sampler=sampler2)
+    test = DataLoaderCuda(test, collate_fn=collate_audio, batch_size=16)
+
+    return train, dev, test
+
+
 if __name__ == '__main__':
 
     labels = Labels()
 
-    dataset = AudioDataset('/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt', labels)
+    dataset = AudioDataset('ru_open_stt_wav/public_youtube700_val.csv', labels)
 
     loader = DataLoader(dataset, batch_size=32, collate_fn=collate_audio)
 

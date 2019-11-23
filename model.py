@@ -139,7 +139,7 @@ class LanguageModel(nn.Module):
             self.load_state_dict(torch.load(checkpoint, map_location='cpu'))
 
     def forward(self, x, lengths, head=True):
-        init = torch.zeros((1, x.shape[1]), device=x.device).long()
+        init = torch.zeros((1, x.shape[1]), device=x.device, dtype=torch.long)
         x = torch.cat([init, x.long()])
         x = self.emb(x)
         x = pack_padded_sequence(x, lengths + 1, enforce_sorted=False)
@@ -178,6 +178,7 @@ class Transducer(nn.Module):
         super(Transducer, self).__init__()
 
         self.blank = blank
+        self.vocab_size = vocab_size
 
         self.am = AcousticModel(40, hidden_size, prj_size, vocab_size,
                                 n_layers=am_layers, dropout=dropout,
@@ -192,7 +193,8 @@ class Transducer(nn.Module):
         for p in self.lm.fc.parameters():
             p.requires_grads = False
 
-        self.fc = nn.Linear(prj_size, vocab_size)
+        self.fc = nn.Sequential(nn.ReLU(inplace=True),
+                                nn.Linear(prj_size, vocab_size))
 
         self.stream_am = torch.cuda.Stream()
         self.stream_lm = torch.cuda.Stream()
@@ -218,8 +220,7 @@ class Transducer(nn.Module):
         return zs
 
     def joint(self, x, y):
-        z = torch.tanh(x + y)
-        z = self.fc(z)
+        z = self.fc(x + y)
         z = log_softmax(z, dim=-1)
         return z
 
@@ -238,26 +239,39 @@ class Transducer(nn.Module):
         zs = self.forward_joint(xs, ys)
         return zs, xs, xn
 
-    def greedy_decode(self, xs, sampled=False):
+    def greedy_decode(self, xs, prior=None, sampled=False, epsilon=0, argmax=True):
 
         n, t, h = xs.size()
 
-        c = torch.zeros((1, n), device=xs.device).long()
+        if argmax:
+            s = torch.zeros((n, t), device=xs.device, dtype=torch.int)
+        else:
+            s = torch.zeros((n, t, self.vocab_size), device=xs.device, dtype=torch.float)
+
+        c = torch.zeros((1, n), device=xs.device, dtype=torch.long)
 
         yd, (hd, cd) = self.lm.step_features(c)
-
-        s = torch.zeros((n, t), device=xs.device, dtype=torch.int)
 
         for i in range(t):
 
             z = self.joint(xs[:, i], yd[0])
 
+            if prior is not None:
+                z -= prior
+
             if sampled:
                 c = torch.multinomial(z.exp(), num_samples=1).view(n)
+                if epsilon > 0:
+                    e = torch.bernoulli(torch.ones_like(c) * epsilon)
+                    r = torch.argmax(torch.randn_like(z), dim=-1)
+                    c = torch.where(e.bool(), r, c)
             else:
                 c = torch.argmax(z, dim=-1)
 
-            s[:, i] = c
+            if argmax:
+                s[:, i] = c
+            else:
+                s[:, i] = z
 
             c = c.view(1, n)
 

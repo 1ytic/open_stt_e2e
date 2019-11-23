@@ -3,15 +3,12 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
-
-from data import Labels, AudioDataset, DataLoaderCuda, collate_audio, BucketingSampler
-
+from torch.utils.tensorboard import SummaryWriter
+from torch_edit_distance import remove_blank, AverageWER, AverageCER
+from data import Labels, split_train_dev_test
 from model import Transducer
 from utils import AverageMeter
-
 from warp_rnnt import rnnt_loss
-from pytorch_edit_distance import remove_blank, AverageWER, AverageCER
-
 
 torch.backends.cudnn.benchmark = True
 torch.manual_seed(1)
@@ -19,100 +16,149 @@ np.random.seed(1)
 
 labels = Labels()
 
-model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.4,
-                   am_checkpoint='exp/am.bin', lm_checkpoint='exp/lm.bin')
-model.cuda()
-
-train = [
-    '/media/lytic/STORE/ru_open_stt_wav/public_youtube1120_hq.txt',
-    #'/media/lytic/STORE/ru_open_stt_wav/public_youtube700_aa.txt'
-]
-
-test = [
-    '/media/lytic/STORE/ru_open_stt_wav/asr_calls_2_val.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/buriy_audiobooks_2_val.txt',
-    '/media/lytic/STORE/ru_open_stt_wav/public_youtube700_val.txt'
-]
-
-train = AudioDataset(train, labels)
-test = AudioDataset(test, labels)
-
-train.filter_by_conv(model.am.conv)
-train.filter_by_length(400)
-
-test.filter_by_conv(model.am.conv)
-test.filter_by_length(500)
-
-parameters = [
-    {"params": model.am.parameters(), "lr": 3e-5},
-    {"params": model.lm.parameters(), "lr": 3e-5},
-    {"params": model.fc.parameters(), "lr": 3e-4}
-]
-
-optimizer = torch.optim.Adam(parameters, weight_decay=1e-5)
-scheduler = StepLR(optimizer, step_size=1000, gamma=0.99)
-
-sampler = BucketingSampler(train, 32)
-
-train = DataLoaderCuda(train, collate_fn=collate_audio, batch_sampler=sampler)
-test = DataLoaderCuda(test, collate_fn=collate_audio, batch_size=16)
-
 blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
 space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 
-for epoch in range(10):
+model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.3,
+                   am_checkpoint='runs/ctc_bs32x4_gn200/model19.bin',
+                   lm_checkpoint='runs/lm_bptt8_bs64_gn1_do0.3/model10.bin')
+model.cuda()
 
-    sampler.shuffle(epoch)
+train, dev, test = split_train_dev_test(
+    '/media/lytic/STORE/ru_open_stt_wav',
+    labels, model.am.conv, batch_size=32
+)
+
+parameters = [
+    {'params': model.fc.parameters(), 'lr': 3e-5},
+    {'params': model.am.parameters(), 'lr': 3e-5},
+    {'params': model.lm.parameters(), 'lr': 3e-5}
+]
+
+optimizer = torch.optim.Adam(parameters, weight_decay=1e-5)
+scheduler = StepLR(optimizer, step_size=2000, gamma=0.99)
+
+beta = 0.5
+
+step = 0
+writer = SummaryWriter(comment='_rnnt_bs32x4_gn200_beta0.5')
+
+for epoch in range(1, 11):
+
+    train.shuffle(epoch)
 
     model.train()
 
-    err = AverageMeter('loss')
-    grd = AverageMeter('gradient')
+    err = AverageMeter('Loss/train')
+    ent = AverageMeter('Entropy/train')
+    grd = AverageMeter('Gradient/train')
+
+    optimizer.zero_grad()
 
     for xs, ys, xn, yn in train:
 
-        optimizer.zero_grad()
+        step += 1
 
         zs, xs, xn = model(xs, ys.t(), xn, yn)
 
-        loss = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
+        loss1 = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
+
+        loss2 = -(zs.exp() * zs).sum(dim=-1).mean()
+
+        loss = loss1 - beta * loss2
+
         loss.backward()
 
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 50)
+        err.update(loss1.item())
+        ent.update(loss2.item())
+
+        writer.add_scalar(err.title + '/steps', loss1.item(), step)
+        writer.add_scalar(ent.title + '/steps', loss2.item(), step)
+
+        if step % 4 > 0:
+            continue
+
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 200)
 
         optimizer.step()
         scheduler.step()
 
-        err.update(loss.item())
+        optimizer.zero_grad()
+
         grd.update(grad_norm)
 
-        train.set_description('epoch %d %s %s' % (epoch + 1, err, grd))
+        writer.add_scalar(grd.title + '/steps', grad_norm, step)
+
+        train.set_description('Epoch %d %s %s %s' % (epoch, err, ent, grd))
 
     model.eval()
 
-    err = AverageMeter('loss')
+    for i, lr in enumerate(scheduler.get_lr()):
+        writer.add_scalar('LR/%d' % i, lr, epoch)
+
+    err.summary(writer, epoch)
+    ent.summary(writer, epoch)
+    grd.summary(writer, epoch)
+
+    err = AverageMeter('Loss/test')
+    ent = AverageMeter('Entropy/test')
     cer = AverageCER(blank, space)
     wer = AverageWER(blank, space)
 
     with torch.no_grad():
 
+        temperature = 3
+        prediction = []
+        prior = 0
+
+        for xs, ys, xn, yn in dev:
+
+            xs, xn = model.forward_acoustic(xs, xn)
+
+            xs = model.greedy_decode(xs, argmax=False)
+
+            xs = xs.exp().view(-1, len(labels))
+
+            prediction.append(xs.argmax(1).cpu())
+            prior += xs.sum(dim=0)
+
+            dev.set_description('Epoch %d Prior %.5f' % (epoch, prior.std().item()))
+
+        prediction = torch.cat(prediction)
+        prior = (prior / prediction.size(0)).log() / temperature
+
+        writer.add_histogram('Prediction', prediction[prediction != labels.blank()], epoch)
+        writer.add_histogram('Prior', prior, epoch)
+
         for xs, ys, xn, yn in test:
 
             zs, xs, xn = model(xs, ys.t(), xn, yn)
 
-            loss = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
+            loss1 = rnnt_loss(zs, ys, xn, yn, average_frames=False, reduction="mean")
 
-            xs = model.greedy_decode(xs)
+            loss2 = -(zs.exp() * zs).sum(dim=-1).mean()
 
-            err.update(loss.item())
+            xs = model.greedy_decode(xs, prior)
+
+            err.update(loss1.item())
+            ent.update(loss2.item())
 
             remove_blank(xs, xn, blank)
 
-            wer.update(xs, ys, xn, yn)
             cer.update(xs, ys, xn, yn)
+            wer.update(xs, ys, xn, yn)
 
-            test.set_description('epoch %d %s %s %s' % (epoch + 1, err, cer, wer))
+            test.set_description('Epoch %d %s %s %s %s' % (epoch, err, ent, cer, wer))
 
     sys.stderr.write('\n')
 
-    torch.save(model.state_dict(), 'exp/asr.bin')
+    err.summary(writer, epoch)
+    ent.summary(writer, epoch)
+    cer.summary(writer, epoch)
+    wer.summary(writer, epoch)
+
+    writer.flush()
+
+    torch.save(model.state_dict(), writer.log_dir + '/model%d.bin' % epoch)
+
+writer.close()
