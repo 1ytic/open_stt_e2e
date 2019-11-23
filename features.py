@@ -40,7 +40,7 @@ prefix = args.manifest.replace('.csv', '')
 
 print(prefix)
 
-tasks = []
+files = dict()
 
 with open(args.manifest) as f:
 
@@ -56,7 +56,11 @@ with open(args.manifest) as f:
         if isfile(numpy_path):
             continue
 
-        tasks.append(delayed(job)(audio_path, numpy_path))
+        files[audio_path] = numpy_path
+
+tasks = []
+for audio_path, numpy_path in files.items():
+    tasks.append(delayed(job)(audio_path, numpy_path))
 
 print('Tasks:', len(tasks))
 

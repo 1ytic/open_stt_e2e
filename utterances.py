@@ -34,7 +34,7 @@ prefix = args.manifest.replace('.csv', '')
 
 print(prefix)
 
-tasks = []
+files = dict()
 
 with open(args.manifest) as f:
 
@@ -52,7 +52,11 @@ with open(args.manifest) as f:
         if not isfile(numpy_path):
             continue
 
-        tasks.append(delayed(job)(text_path, numpy_path))
+        files[text_path] = numpy_path
+
+tasks = []
+for text_path, numpy_path in files.items():
+    tasks.append(delayed(job)(text_path, numpy_path))
 
 print('Tasks:', len(tasks))
 
