@@ -30,19 +30,24 @@ model.cuda()
 bptt = 8
 batch_size = 64
 
-root = '/media/lytic/STORE/ru_open_stt_wav'
+root = '/open-stt-e2e/data/'
 
 train = [
-    root + '/asr_public_phone_calls_1.csv',
-    root + '/public_youtube1120_hq.csv',
-    root + '/public_youtube700_aa.csv',
-    root + '/public_youtube700_ab.csv'
+    root + 'asr_public_phone_calls_1.csv',
+    root + 'asr_public_phone_calls_2_aa.csv',
+    root + 'asr_public_phone_calls_2_ab.csv',
+    root + 'public_youtube1120_aa.csv',
+    root + 'public_youtube1120_ab.csv',
+    root + 'public_youtube1120_ac.csv',
+    root + 'public_youtube1120_hq.csv',
+    root + 'public_youtube700_aa.csv',
+    root + 'public_youtube700_ab.csv'
 ]
 
 test = [
-    root + '/asr_calls_2_val.csv',
-    root + '/buriy_audiobooks_2_val.csv',
-    root + '/public_youtube700_val.csv'
+    root + 'asr_calls_2_val.csv',
+    root + 'buriy_audiobooks_2_val.csv',
+    root + 'public_youtube700_val.csv'
 ]
 
 train = TextDataset(train, labels, batch_size)

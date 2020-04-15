@@ -20,12 +20,12 @@ blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
 space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 
 model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.3,
-                   am_checkpoint='runs/ctc_bs32x4_gn200/model19.bin',
-                   lm_checkpoint='runs/lm_bptt8_bs64_gn1_do0.3/model10.bin')
+                   am_checkpoint='runs/Dec14_21-53-45_ctc_bs32x4_gn200/model20.bin',
+                   lm_checkpoint='runs/Dec09_22-04-47_lm_bptt8_bs64_gn1_do0.3/model10.bin')
 model.cuda()
 
 train, dev, test = split_train_dev_test(
-    '/media/lytic/STORE/ru_open_stt_wav',
+    '/open-stt-e2e/data/',
     labels, model.am.conv, batch_size=32
 )
 

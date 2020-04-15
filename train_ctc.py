@@ -23,7 +23,7 @@ model = AcousticModel(40, 512, 256, len(labels), n_layers=3, dropout=0.3)
 model.cuda()
 
 train, dev, test = split_train_dev_test(
-    '/media/lytic/STORE/ru_open_stt_wav',
+    '/open-stt-e2e/data/',
     labels, model.conv, batch_size=32
 )
 

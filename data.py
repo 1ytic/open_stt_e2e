@@ -81,7 +81,8 @@ class TextDataset(Dataset):
 
 class AudioDataset(Dataset):
 
-    def __init__(self, source, labels, model=None, length=0):
+    def __init__(self, root, source, labels, model=None, length=0):
+        self.root = root
         self.data = load_data(source)
         self.labels = labels
         if model is not None:
@@ -94,7 +95,7 @@ class AudioDataset(Dataset):
 
     def __getitem__(self, i):
         file = self.data.iloc[i]
-        features = torch.tensor(np.load(file.name), dtype=torch.float32)
+        features = torch.tensor(np.load(self.root + file.name), dtype=torch.float32)
         targets = torch.tensor(self.labels(file['text']), dtype=torch.int)
         return features, targets
 
@@ -191,26 +192,28 @@ class DataLoaderCuda(DataLoader):
 def split_train_dev_test(root, labels, model, batch_size=32):
 
     train = [
-        root + '/asr_public_phone_calls_1.csv',
-        root + '/public_youtube1120_hq.csv',
-        root + '/public_youtube700_aa.csv',
-        root + '/public_youtube700_ab.csv'
+        root + 'asr_public_phone_calls_1.csv',
+        root + 'asr_public_phone_calls_2_aa.csv',
+        root + 'asr_public_phone_calls_2_ab.csv',
+        root + 'public_youtube1120_hq.csv',
+        root + 'public_youtube700_aa.csv',
+        root + 'public_youtube700_ab.csv'
     ]
 
     dev = [
-        root + '/asr_public_phone_calls_1.csv',
-        root + '/public_youtube1120_hq.csv',
+        root + 'asr_public_phone_calls_1.csv',
+        root + 'public_youtube1120_hq.csv',
     ]
 
     test = [
-        root + '/asr_calls_2_val.csv',
-        root + '/buriy_audiobooks_2_val.csv',
-        root + '/public_youtube700_val.csv'
+        root + 'asr_calls_2_val.csv',
+        root + 'buriy_audiobooks_2_val.csv',
+        root + 'public_youtube700_val.csv'
     ]
 
-    train = AudioDataset(train, labels, model, 400)
-    dev = AudioDataset(dev, labels, model, 1000)
-    test = AudioDataset(test, labels, model, 1000)
+    train = AudioDataset(root, train, labels, model, 400)
+    dev = AudioDataset(root, dev, labels, model, 1000)
+    test = AudioDataset(root, test, labels, model, 1000)
 
     sampler1 = BucketingSampler(train, size=batch_size)
     sampler2 = BucketingSampler(dev, size=1, limit=1000)
@@ -228,7 +231,7 @@ if __name__ == '__main__':
 
     labels = Labels()
 
-    dataset = AudioDataset('ru_open_stt_wav/public_youtube700_val.csv', labels)
+    dataset = AudioDataset('data/', 'data/public_youtube700_val.csv', labels)
 
     loader = DataLoader(dataset, batch_size=32, collate_fn=collate_audio)
 

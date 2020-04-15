@@ -195,9 +195,10 @@ class Transducer(nn.Module):
 
         self.fc = nn.Sequential(nn.ReLU(inplace=True),
                                 nn.Linear(prj_size, vocab_size))
-
-        self.stream_am = torch.cuda.Stream()
-        self.stream_lm = torch.cuda.Stream()
+        
+        # NOTE: V100 has some issue with multi-stream approach
+        #self.stream_am = torch.cuda.Stream()
+        #self.stream_lm = torch.cuda.Stream()
 
     def forward_acoustic(self, xs, xn):
         xs, xn = self.am(xs, xn, head=False)
@@ -226,15 +227,15 @@ class Transducer(nn.Module):
 
     def forward(self, xs, ys, xn, yn):
         # wait all inputs
-        torch.cuda.synchronize()
+        #torch.cuda.synchronize()
         # acoustic model
-        with torch.cuda.stream(self.stream_am):
-            xs, xn = self.forward_acoustic(xs, xn)
+        #with torch.cuda.stream(self.stream_am):
+        xs, xn = self.forward_acoustic(xs, xn)
         # language model
-        with torch.cuda.stream(self.stream_lm):
-            ys = self.forward_language(ys, yn)
+        #with torch.cuda.stream(self.stream_lm):
+        ys = self.forward_language(ys, yn)
         # synchronize two flows
-        torch.cuda.synchronize()
+        #torch.cuda.synchronize()
         # joint
         zs = self.forward_joint(xs, ys)
         return zs, xs, xn

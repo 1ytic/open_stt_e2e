@@ -17,10 +17,10 @@ The following table shows the results for [Russian Open Speech To Text (STT/ASR)
 
 | Stage | Model | Loss  | Updates | CER  | WER  |
 |:-----:|:------|:------|--------:|:----:|:----:|
-| 1     | LM    | CE    | 1038000  |      |      |
-| 2     | AM    | CTC   | 156000  | 21.3 | 59.0 |
-| 3     | LM+AM | RNN-T | 78000   | 24.4 | 49.7 |
-| 4     | LM+AM | RL    | 450     | 21.8 | 48.2 |
+| 1     | LM    | CE    | 2407000 |      |      |
+| 2     | AM    | CTC   | 216850  | 19.9 | 57.0 |
+| 3     | LM+AM | RNN-T | 108425  | 21.7 | 45.6 |
+| 4     | LM+AM | RL    | 300     | 19.2 | 43.9 |
 
 
 ## Requirements
@@ -41,11 +41,15 @@ Language model is character-based and not case sensitive.
 - [utterances.py](utterances.py) - extract transcriptions of precomputed utterances
 
 
-## Google Colaboratory
+## Google Cloud Storage
 
-The pre-processed dataset uploaded to Google Cloud Storage:
+Pre-processed datasets:
 
 - [ru_open_stt_wav](https://console.cloud.google.com/storage/browser/ru_open_stt_wav)
+
+Pre-trained models:
+
+- [ru_open_stt_models](https://console.cloud.google.com/storage/browser/ru_open_stt_models)
 
 
 ## Kaggle Kernels

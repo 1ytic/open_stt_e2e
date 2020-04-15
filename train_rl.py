@@ -2,7 +2,6 @@ import sys
 import torch
 import numpy as np
 import torch.nn as nn
-import torch_edit_distance
 from torch.nn.functional import relu, elu
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.tensorboard import SummaryWriter
@@ -21,14 +20,14 @@ labels = Labels()
 blank = torch.tensor([labels.blank()], dtype=torch.int).cuda()
 space = torch.tensor([labels.space()], dtype=torch.int).cuda()
 
-model_path = 'runs/rnnt_bs32x4_gn200_beta0.5/model10.bin'
+model_path = 'runs/Jan06_19-51-52_rnnt_bs32x4_gn200_beta0.5/model10.bin'
 
 model = Transducer(128, len(labels), 512, 256, am_layers=3, lm_layers=3, dropout=0.3)
 model.load_state_dict(torch.load(model_path, map_location='cpu'))
 model.cuda()
 
 train, dev, test = split_train_dev_test(
-    '/media/lytic/STORE/ru_open_stt_wav',
+    '/open-stt-e2e/data/',
     labels, model.am.conv, batch_size=16
 )
 
@@ -229,6 +228,6 @@ for epoch in range(1, 11):
 
     writer.flush()
 
-    # torch.save(model.state_dict(), writer.log_dir + '/model%d.bin' % epoch)
+    torch.save(model.state_dict(), writer.log_dir + '/model%d.bin' % epoch)
 
 writer.close()
