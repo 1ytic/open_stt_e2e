@@ -43,10 +43,6 @@ Language model is character-based and not case sensitive.
 
 ## Google Cloud Storage
 
-Pre-processed datasets:
-
-- [ru_open_stt_wav](https://console.cloud.google.com/storage/browser/ru_open_stt_wav)
-
 Pre-trained models:
 
 - [ru_open_stt_models](https://console.cloud.google.com/storage/browser/ru_open_stt_models)
